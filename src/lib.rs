@@ -1,10 +1,9 @@
 use orion::aead;
 #[allow(dead_code)]
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::io::prelude::*;
 use zeroize::Zeroize;
-
-const DEFAULT_PASSWORD_LENGTH: u32 = 30;
 
 const ENCRYPTION_SALT: [u8; 64] = [
     0xe3, 0x1a, 0x0c, 0x9b, 0x6b, 0x01, 0xbe, 0x19, 0xc5, 0x44, 0x7f, 0xb9, 0x2f, 0x79, 0x94, 0x91,
@@ -27,21 +26,24 @@ pub struct Ranpaman {
     master_password: Vec<u8>,
     encryption_key: Vec<u8>,
     file_path: Option<String>,
-    data: Vec<Service>,
+    data: HashMap<(String, String), Settings>,
 }
 
-#[derive(Serialize, Deserialize, Debug, PartialEq, Eq, PartialOrd, Ord)]
-struct Service {
-    name: String,
-    accounts: Vec<Account>,
-}
-
-#[derive(Serialize, Deserialize, Debug, PartialEq, Eq, PartialOrd, Ord)]
-struct Account {
-    login: String,
+#[derive(Serialize, Deserialize, Debug, PartialEq)]
+pub struct Settings {
     include_special_characters: bool,
     revision: u32,
-    custom_length: Option<u32>,
+    password_length: u32,
+}
+
+impl Default for Settings {
+    fn default() -> Settings {
+        Settings {
+            include_special_characters: true,
+            revision: 0,
+            password_length: 30,
+        }
+    }
 }
 
 impl Drop for Ranpaman {
@@ -61,7 +63,7 @@ impl Ranpaman {
             master_password: pw,
             encryption_key: key,
             file_path,
-            data: Vec::new(),
+            data: HashMap::new(),
         }
     }
 
@@ -69,60 +71,32 @@ impl Ranpaman {
         &mut self,
         service_name: String,
         login: String,
-        include_special_characters: bool,
-        custom_length: Option<u32>,
+        settings: Settings,
     ) -> Result<()> {
-        if service_name.is_empty() || login.is_empty() {
+        if service_name.is_empty() || login.is_empty() || settings.password_length < 4 {
             //TODO: Return an error here
         }
-        if let Some(length) = custom_length {
-            if length < 1 {
-                //TODO: Return an error here
-            }
+        let key = (service_name, login);
+        if self.data.contains_key(&key) {
+            //TODO: Return an error here
+        } else {
+            self.data.insert(key, settings);
         }
-
-        let account = Account {
-            login,
-            include_special_characters,
-            revision: 0,
-            custom_length,
-        };
-        match self
-            .data
-            .binary_search_by_key(&&service_name, |service| &service.name)
-        {
-            Ok(index) => {
-                let service = &mut self.data.get_mut(index).unwrap();
-                match service
-                    .accounts
-                    .binary_search_by_key(&&account.login, |account| &account.login)
-                {
-                    Ok(_) =>
-                        /*Return an error here*/
-                        {}
-                    Err(index) => service.accounts.insert(index, account),
-                }
-            }
-            Err(index) => self.data.insert(
-                index,
-                Service {
-                    name: service_name,
-                    accounts: vec![account],
-                },
-            ),
-        };
         Ok(())
     }
 
-    pub fn get_password(&self, service_name: &String, login: &String) -> Result<Vec<u8>>{
-        if let Ok(accounts) = self
+    pub fn get_password(&self, login: String, service_name: String) -> Result<Vec<u8>> {
+        match self
             .data
-            .binary_search_by_key(&service_name, |service| &service.name)
-            .map(|index| self.data[index].accounts){
-                if let Ok(account) = accounts.binary_search_by_key(&login, |account| &account.login).map(|index| accounts[index]){
-
-                }
+            .get(&(service_name.to_string(), login.to_string()))
+        {
+            Some(settings) => {
+                let salt = vec![settings.revision.to_le_bytes()];
+                let argon_config = argon2::Config::default();
+                let hash = argon2::hash_raw(&self.master_password, &salt, &argon_config).unwrap();
             }
+            None => {}
+        }
         Ok(Vec::new())
     }
 

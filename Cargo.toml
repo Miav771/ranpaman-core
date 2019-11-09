@@ -1,5 +1,5 @@
 [package]
-name = "ranpaman"
+name = "ranpaman-core"
 version = "0.1.0"
 authors = ["Tomasz Sus"]
 edition = "2018"
