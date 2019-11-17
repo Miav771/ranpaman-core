@@ -1,3 +1,5 @@
+use num_bigint::BigUint;
+use num_traits::cast::{FromPrimitive, ToPrimitive};
 use orion::aead;
 #[allow(dead_code)]
 use serde::{Deserialize, Serialize};
@@ -69,8 +71,8 @@ impl Ranpaman {
 
     pub fn add_account(
         &mut self,
-        service_name: String,
         login: String,
+        service_name: String,
         settings: Settings,
     ) -> Result<()> {
         if service_name.is_empty() || login.is_empty() || settings.password_length < 4 {
@@ -85,19 +87,28 @@ impl Ranpaman {
         Ok(())
     }
 
-    pub fn get_password(&self, login: String, service_name: String) -> Result<Vec<u8>> {
+    pub fn get_password(&self, login: String, service_name: String) -> Result<String> {
         match self
             .data
             .get(&(service_name.to_string(), login.to_string()))
         {
             Some(settings) => {
-                let salt = vec![settings.revision.to_le_bytes()];
+                let salt: &[u8] = &[
+                    login.as_bytes(),
+                    service_name.as_bytes(),
+                    &settings.revision.to_le_bytes(),
+                ]
+                .concat(); //TODO: Add login, service_name etc to salt
                 let argon_config = argon2::Config::default();
-                let hash = argon2::hash_raw(&self.master_password, &salt, &argon_config).unwrap();
+                let hash = argon2::hash_raw(&self.master_password, salt, &argon_config).unwrap();
+                let char_sets = generate_character_sets(settings);
+                return encode_password(&hash, char_sets, settings.password_length as usize);
             }
-            None => {}
+            None => {
+                //TODO: Return an error here
+                Ok(String::from(""))
+            }
         }
-        Ok(Vec::new())
     }
 
     pub fn change_file_path(&mut self, new_path: Option<String>) -> Result<()> {
@@ -155,12 +166,73 @@ impl Ranpaman {
     }
 }
 
+fn generate_character_sets(settings: &Settings) -> Vec<Vec<char>> {
+    let mut char_sets = Vec::new();
+    char_sets.push((b'A'..=b'Z').map(char::from).collect());
+    char_sets.push((b'a'..=b'z').map(char::from).collect());
+    if settings.include_special_characters {
+        char_sets.push(vec!['1', '2', '3', '4', '5', '6', '7', '8', '9']);
+        char_sets.push(vec!['%', '&', '#', '$', '+', '-', '@']);
+    }
+    char_sets
+}
+
+fn encode_password(
+    raw_password: &[u8],
+    char_sets: Vec<Vec<char>>,
+    length: usize,
+) -> Result<String> {
+    //Validate char_sets
+    if char_sets.iter().any(|set| set.is_empty()) {
+        //TODO: Return error here
+    }
+
+    let mut entropy = BigUint::from_bytes_le(raw_password);
+    let mut char_set_use_flags: Vec<bool> = char_sets.iter().map(|_| false).collect();
+    let set_length = char_sets.iter().map(|set| set.len()).sum();
+    let mut encoded_password = String::new();
+    while encoded_password.len() < length {
+        if entropy < BigUint::from_usize(set_length).unwrap() {
+            //TODO: Return error here
+        }
+        let new_char: usize = (entropy.clone() % set_length).to_usize().unwrap();
+        entropy /= set_length;
+
+        let mut collective_length = 0;
+        for (index, set) in char_sets.iter().enumerate() {
+            if new_char < set.len() + collective_length {
+                encoded_password.push(set[new_char - collective_length]);
+                char_set_use_flags[index] = true;
+                break;
+            }
+            collective_length += set.len();
+        }
+    }
+    //TODO: Ensure all char_sets were included
+
+    Ok(encoded_password)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
     #[test]
-    fn master_password_generation() {
-        let ranpaman = Ranpaman::new("masterpass".to_string(), Some("test_file".to_string()));
+    fn service_password_generation() {
+        let mut ranpaman = Ranpaman::new("masterpass".to_string(), None);
+        let site = String::from("somesite.com");
+        let mail = String::from("someone@somemail.com");
+        let settings = Settings::default();
+        ranpaman
+            .add_account(site.clone(), mail.clone(), settings)
+            .unwrap();
+        let password = ranpaman.get_password(site, mail).unwrap();
+        assert_eq!("#DnLScQHt4zu%QDLqP$7VD535UjExb", password);
+    }
+
+    #[test]
+    fn key_generation() {
+        let ranpaman = Ranpaman::new("masterpass".to_string(), None);
         assert_eq!(
             ranpaman.master_password,
             [
@@ -168,10 +240,6 @@ mod tests {
                 182, 18, 209, 221, 182, 64, 164, 34, 27, 230, 196, 48, 187, 237
             ]
         );
-    }
-    #[test]
-    fn encryption_key_generation() {
-        let ranpaman = Ranpaman::new("masterpass".to_string(), Some("test_file".to_string()));
         assert_eq!(
             ranpaman.encryption_key,
             [
@@ -183,7 +251,7 @@ mod tests {
 
     #[test]
     fn read_write() {
-        let path = "test_file";
+        let path = "read_write_test_file";
         let ranpaman = Ranpaman::new("masterpass".to_string(), Some(path.to_string()));
         ranpaman.write_to_file().unwrap();
         let decoded = Ranpaman::read_from_file("masterpass".to_string(), path).unwrap();
@@ -193,11 +261,11 @@ mod tests {
 
     #[test]
     fn change_file_path() {
-        let path = "test_file";
+        let path = "change_file_path_test_file";
         let ranpaman = Ranpaman::new("masterpass".to_string(), Some(path.to_string()));
         ranpaman.write_to_file().unwrap();
         let mut decoded = Ranpaman::read_from_file("masterpass".to_string(), path).unwrap();
-        let new_path = "other_test_file";
+        let new_path = "change_file_path_other_test_file";
         decoded
             .change_file_path(Some(new_path.to_string()))
             .unwrap();
@@ -209,7 +277,7 @@ mod tests {
 
     #[test]
     fn get_file_path() {
-        let path = "test_file1";
+        let path = "get_file_path_test_file";
         let ranpaman = Ranpaman::new("masterpass".to_string(), Some(path.to_string()));
         assert_eq!(ranpaman.get_file_path(), Some(&path.to_string()));
     }
