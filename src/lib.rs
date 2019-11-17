@@ -5,6 +5,7 @@ use orion::aead;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::io::prelude::*;
+use blake2::{Blake2b, Digest};
 use zeroize::Zeroize;
 
 const ENCRYPTION_SALT: [u8; 64] = [
@@ -208,9 +209,16 @@ fn encode_password(
             collective_length += set.len();
         }
     }
-    //TODO: Ensure all char_sets were included
-
-    Ok(encoded_password)
+    if char_set_use_flags.into_iter().all(|flag| flag){
+        return Ok(encoded_password);
+    }else{
+        // If the currently encoded password doesn't have at least one
+        // character from each character set, recursively add another 
+        // round of hashing to the raw password and try again
+        let mut hasher = Blake2b::new();
+        hasher.input(raw_password);
+        return encode_password(&hasher.result(), char_sets, length);
+    }
 }
 
 #[cfg(test)]
